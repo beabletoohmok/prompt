@@ -1,0 +1,328 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8" />
+<title>엄청 어려운 오목 AI</title>
+<style>
+  body {
+    font-family: 'Malgun Gothic', sans-serif;
+    background: #f0deb1;
+    text-align: center;
+    margin: 20px;
+  }
+  canvas {
+    border: 2px solid #333;
+    background: #deb887;
+    cursor: pointer;
+  }
+  #message {
+    margin-top: 15px;
+    font-weight: bold;
+    font-size: 20px;
+    color: #b22222;
+  }
+  button {
+    margin-top: 15px;
+    padding: 8px 15px;
+    font-size: 16px;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+  <h1>엄청 어려운 오목 AI</h1>
+  <canvas id="board" width="600" height="600"></canvas>
+  <div id="message">당신의 차례입니다.</div>
+  <button id="resetBtn">게임 리셋</button>
+
+<script>
+(() => {
+  const canvas = document.getElementById('board');
+  const ctx = canvas.getContext('2d');
+  const size = 15;
+  const cellSize = canvas.width / size;
+  const board = Array.from({ length: size }, () => Array(size).fill(0));
+  const PLAYER = 1; // 흑
+  const AI = 2;     // 백
+  const MAX_DEPTH = 4; // 깊이: 4면 꽤 어려움
+  const messageDiv = document.getElementById('message');
+  const resetBtn = document.getElementById('resetBtn');
+  let gameOver = false;
+
+  // 그리기
+  function drawBoard() {
+    ctx.clearRect(0,0,canvas.width,canvas.height);
+    ctx.strokeStyle = "#333";
+    for(let i=0;i<size;i++) {
+      ctx.beginPath();
+      ctx.moveTo(cellSize/2, i*cellSize + cellSize/2);
+      ctx.lineTo(canvas.width - cellSize/2, i*cellSize + cellSize/2);
+      ctx.stroke();
+
+      ctx.beginPath();
+      ctx.moveTo(i*cellSize + cellSize/2, cellSize/2);
+      ctx.lineTo(i*cellSize + cellSize/2, canvas.height - cellSize/2);
+      ctx.stroke();
+    }
+  }
+
+  function drawStone(x,y,player){
+    ctx.beginPath();
+    ctx.arc(x*cellSize + cellSize/2, y*cellSize + cellSize/2, cellSize/2.8, 0, Math.PI*2);
+    ctx.fillStyle = player === PLAYER ? 'black' : 'white';
+    ctx.shadowColor = "rgba(0,0,0,0.3)";
+    ctx.shadowBlur = 4;
+    ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.strokeStyle = "#333";
+    ctx.stroke();
+  }
+
+  function redraw() {
+    drawBoard();
+    for(let y=0;y<size;y++) {
+      for(let x=0;x<size;x++) {
+        if(board[y][x] !== 0) drawStone(x,y,board[y][x]);
+      }
+    }
+  }
+
+  function inBounds(x,y) {
+    return x>=0 && y>=0 && x<size && y<size;
+  }
+
+  // 5목 체크
+  function checkWin(x,y,player){
+    const dirs = [[1,0],[0,1],[1,1],[1,-1]];
+    for(const [dx,dy] of dirs){
+      let count=1;
+      for(let dir of [-1,1]){
+        let step=1;
+        while(true){
+          const nx = x + dx*step*dir;
+          const ny = y + dy*step*dir;
+          if(!inBounds(nx,ny)) break;
+          if(board[ny][nx] !== player) break;
+          count++;
+          step++;
+        }
+      }
+      if(count>=5) return true;
+    }
+    return false;
+  }
+
+  // 점수 패턴 정의 (연속 개수, 열린/막힌 여부)
+  // 매우 단순화된 버전이지만 전략적 수 읽기 보조용
+  const SCORES = {
+    'FIVE': 100000,
+    'OPEN_FOUR': 10000,
+    'FOUR': 1000,
+    'OPEN_THREE': 1000,
+    'THREE': 100,
+    'OPEN_TWO': 100,
+    'TWO': 10
+  };
+
+  // 특정 방향 (dx, dy) 기준 특정 위치에서의 연속 돌과 양끝 열림 확인
+  function analyzeLine(x,y,dx,dy,player){
+    let count = 0;
+    let blocked = 0;
+
+    // 앞방향
+    let nx = x, ny = y;
+    while(inBounds(nx,ny) && board[ny][nx] === player) {
+      count++;
+      nx += dx;
+      ny += dy;
+    }
+    if(!inBounds(nx,ny) || board[ny][nx] !== 0) blocked++;
+
+    // 반대방향
+    nx = x - dx;
+    ny = y - dy;
+    while(inBounds(nx,ny) && board[ny][nx] === player){
+      count++;
+      nx -= dx;
+      ny -= dy;
+    }
+    if(!inBounds(nx,ny) || board[ny][nx] !== 0) blocked++;
+
+    return {count, blocked};
+  }
+
+  // 특정 플레이어 입장에서 평가 점수 계산
+  function evaluate(board, player){
+    let score = 0;
+    const directions = [[1,0],[0,1],[1,1],[1,-1]];
+    for(let y=0;y<size;y++){
+      for(let x=0;x<size;x++){
+        if(board[y][x] !== player) continue;
+        for(const [dx,dy] of directions){
+          const {count, blocked} = analyzeLine(x,y,dx,dy,player);
+          if(count >=5) return SCORES.FIVE;
+          if(count ===4){
+            score += blocked ===0 ? SCORES.OPEN_FOUR : SCORES.FOUR;
+          } else if(count ===3){
+            score += blocked ===0 ? SCORES.OPEN_THREE : SCORES.THREE;
+          } else if(count ===2){
+            score += blocked ===0 ? SCORES.OPEN_TWO : SCORES.TWO;
+          }
+        }
+      }
+    }
+    return score;
+  }
+
+  // AI 점수는 자기 점수 - 상대 점수 * 가중치
+  function heuristic(board){
+    const myScore = evaluate(board, AI);
+    if(myScore >= SCORES.FIVE) return 100000;
+    const oppScore = evaluate(board, PLAYER);
+    if(oppScore >= SCORES.FIVE) return -100000;
+    return myScore - oppScore * 1.1;
+  }
+
+  // 후보군: 빈 칸 중, 돌 주변 2칸 이내 위치
+  function getCandidates(board){
+    const candidates = [];
+    const range = 2;
+    for(let y=0;y<size;y++){
+      for(let x=0;x<size;x++){
+        if(board[y][x] !== 0) continue;
+        // 주변에 돌이 있는지 확인
+        let found = false;
+        for(let dy=-range;dy<=range;dy++){
+          for(let dx=-range;dx<=range;dx++){
+            if(dx===0 && dy===0) continue;
+            const nx = x+dx, ny = y+dy;
+            if(inBounds(nx,ny) && board[ny][nx] !== 0){
+              found = true;
+              break;
+            }
+          }
+          if(found) break;
+        }
+        if(found) candidates.push([x,y]);
+      }
+    }
+    // 첫수거나 주변 후보 없으면 중앙 위치
+    if(candidates.length === 0){
+      candidates.push([Math.floor(size/2), Math.floor(size/2)]);
+    }
+    return candidates;
+  }
+
+  // 미니맥스 + 알파베타 가지치기 + 후보 우선순위 정렬
+  function minimax(board, depth, alpha, beta, maximizingPlayer){
+    if(depth === 0){
+      return [heuristic(board), null];
+    }
+    const playerNow = maximizingPlayer ? AI : PLAYER;
+    const candidates = getCandidates(board);
+
+    // 후보점수 계산 후 높은 점수순 정렬
+    const scoredMoves = candidates.map(([x,y])=>{
+      board[y][x] = playerNow;
+      const score = heuristic(board);
+      board[y][x] = 0;
+      return {x,y,score};
+    });
+    scoredMoves.sort((a,b) => maximizingPlayer ? b.score - a.score : a.score - b.score);
+
+    if(maximizingPlayer){
+      let maxEval = -Infinity;
+      let bestMove = null;
+      for(let {x,y} of scoredMoves){
+        board[y][x] = AI;
+        if(checkWin(x,y,AI)){
+          board[y][x] = 0;
+          return [100000, [x,y]];
+        }
+        const [evalScore] = minimax(board, depth-1, alpha, beta, false);
+        board[y][x] = 0;
+        if(evalScore > maxEval){
+          maxEval = evalScore;
+          bestMove = [x,y];
+        }
+        alpha = Math.max(alpha, evalScore);
+        if(beta <= alpha) break;
+      }
+      return [maxEval, bestMove];
+    } else {
+      let minEval = Infinity;
+      let bestMove = null;
+      for(let {x,y} of scoredMoves){
+        board[y][x] = PLAYER;
+        if(checkWin(x,y,PLAYER)){
+          board[y][x] = 0;
+          return [-100000, [x,y]];
+        }
+        const [evalScore] = minimax(board, depth-1, alpha, beta, true);
+        board[y][x] = 0;
+        if(evalScore < minEval){
+          minEval = evalScore;
+          bestMove = [x,y];
+        }
+        beta = Math.min(beta, evalScore);
+        if(beta <= alpha) break;
+      }
+      return [minEval, bestMove];
+    }
+  }
+
+  // AI 수 두기
+  function aiMove(){
+    if(gameOver) return;
+    messageDiv.textContent = "AI가 생각중입니다...";
+    setTimeout(() => {
+      const [_, move] = minimax(board, MAX_DEPTH, -Infinity, Infinity, true);
+      if(move){
+        const [x,y] = move;
+        board[y][x] = AI;
+        redraw();
+        if(checkWin(x,y,AI)){
+          messageDiv.textContent = "AI(백)가 승리했습니다!";
+          gameOver = true;
+        } else {
+          messageDiv.textContent = "당신의 차례입니다.";
+        }
+      } else {
+        messageDiv.textContent = "무승부입니다!";
+        gameOver = true;
+      }
+    }, 100);
+  }
+
+  // 사용자 클릭 이벤트
+  canvas.addEventListener('click', e => {
+    if(gameOver) return;
+    const rect = canvas.getBoundingClientRect();
+    const x = Math.floor((e.clientX - rect.left) / cellSize);
+    const y = Math.floor((e.clientY - rect.top) / cellSize);
+    if(!inBounds(x,y)) return;
+    if(board[y][x] !== 0) return;
+    board[y][x] = PLAYER;
+    redraw();
+    if(checkWin(x,y,PLAYER)){
+      messageDiv.textContent = "당신(흑)이 승리했습니다!";
+      gameOver = true;
+      return;
+    }
+    messageDiv.textContent = "AI가 생각중입니다...";
+    setTimeout(aiMove, 100);
+  });
+
+  // 초기화
+  resetBtn.onclick = () => {
+    for(let y=0;y<size;y++) for(let x=0;x<size;x++) board[y][x] = 0;
+    gameOver = false;
+    messageDiv.textContent = "당신의 차례입니다.";
+    redraw();
+  };
+
+  redraw();
+})();
+</script>
+</body>
+</html>
